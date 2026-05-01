@@ -28,7 +28,7 @@ exports.handler = async (event, context) => {
             const reqBody = JSON.parse(event.body);
 
             const insert = await connection.prepare("INSERT INTO users (username, pw_hash) VALUES (?,?)");
-            const response = await insert.all([reqBody.username, reqBody.pwHash]);
+            const response = await insert.run([reqBody.username, reqBody.pwHash]);
 
             return {
                 statusCode: 200,
