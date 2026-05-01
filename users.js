@@ -22,4 +22,23 @@ exports.handler = async (event, context) => {
             };
         }
     }
+
+    if (event.httpMethod === 'POST') {
+        try {
+            const reqBody = JSON.parse(event.body);
+
+            const insert = await connection.prepare("INSERT INTO users VALUES (?,?)");
+            const response = await insert.all([reqBody.username, reqBody.pwHash]);
+
+            return {
+                statusCode: 200,
+                body: JSON.stringify({response})
+            };
+        } catch (error) {
+            return {
+                statusCode: 500,
+                body: JSON.stringify({ error: error }),
+            };
+        }
+    }
 }
