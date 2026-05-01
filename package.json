@@ -1,0 +1,25 @@
+{
+  "name": "kobeni-api",
+  "version": "1.0.0",
+  "description": "TEST",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/am-amrexatechnologies/kbni-api.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/am-amrexatechnologies/kbni-api/issues"
+  },
+  "homepage": "https://github.com/am-amrexatechnologies/kbni-api#readme",
+  "dependencies": {
+    "@libsql/client": "^0.17.3",
+    "@tursodatabase/database": "^0.5.3",
+    "@tursodatabase/serverless": "^1.1.2",
+    "@tursodatabase/sync": "^0.5.3"
+  }
+}
