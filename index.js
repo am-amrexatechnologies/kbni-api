@@ -21,11 +21,11 @@ app.get("/", (req, res) => {
 
 app.get("/chat", async (req, res) => {
 	try {
-		const rows = await connection.execute("SELECT * FROM chat");
+		const data = await connection.execute("SELECT * FROM chat");
 
 		res.json({
 			statusCode: res.statusCode,
-			response: rows
+			response: data.rows
 		});
 	} catch (error) {
 		res.json({
