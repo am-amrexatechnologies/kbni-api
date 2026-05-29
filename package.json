@@ -4,7 +4,7 @@
   "description": "TEST",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
   "repository": {
     "type": "git",
@@ -20,6 +20,10 @@
     "@libsql/client": "^0.17.3",
     "@tursodatabase/database": "^0.5.3",
     "@tursodatabase/serverless": "^1.1.2",
-    "@tursodatabase/sync": "^0.5.3"
+    "@tursodatabase/sync": "^0.5.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-csp-header": "^6.3.1"
   }
 }
