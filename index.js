@@ -1,10 +1,10 @@
 import express from 'express';
-import { createClient } from '@libsql/client';
+import { connect } from '@tursodatabase/serverless';
 
 const app = express();
 app.use(express.json());
 
-const db = createClient({
+const db = connect({
   url: process.env.TURSO_DATABASE_URL,
   authToken: process.env.TURSO_AUTH_TOKEN,
 });

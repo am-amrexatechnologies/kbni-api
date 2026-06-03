@@ -11,7 +11,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@libsql/client": "^0.6.0",
+	"@tursodatabase/serverless": "1.2.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
