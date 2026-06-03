@@ -3,11 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "description": "KBNI – Express.js REST API",
-  "main": "app.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node ./api/index.js",
-    "dev": "nodemon ./api/index.js",
-    "init-db": "node ./db/init.js"
+    "start": "node index.js",
   },
   "engines": {
     "node": ">=18"
