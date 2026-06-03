@@ -1,10 +1,10 @@
-require('dotenv').config()
+import 'dotenv/config'
 
-const express = require('express')
-const cors    = require('cors')
-const bcrypt  = require('bcryptjs')
-const jwt     = require('jsonwebtoken')
-const db      = require('./db/turso')
+import express from 'express'
+import cors    from 'cors'
+import bcrypt  from 'bcryptjs'
+import jwt     from 'jsonwebtoken'
+import db      from './db/turso.js'
 
 const app = express()
 
