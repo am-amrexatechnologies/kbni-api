@@ -5,8 +5,8 @@
   "description": "KBNI – Express.js REST API",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js",
+    "start": "node ./api/index.js",
+    "dev": "nodemon ./api/index.js",
     "init-db": "node ./db/init.js"
   },
   "engines": {
