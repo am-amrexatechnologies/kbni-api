@@ -1,6 +1,7 @@
 {
   "name": "kbni-api",
   "version": "1.0.0",
+  "type": "module",
   "description": "KBNI – Express.js REST API",
   "main": "src/index.js",
   "scripts": {

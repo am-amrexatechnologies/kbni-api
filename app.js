@@ -43,4 +43,4 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ message: 'Interner Serverfehler.' })
 })
 
-module.exports = app
+export default app
