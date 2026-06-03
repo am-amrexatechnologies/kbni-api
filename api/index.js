@@ -4,7 +4,7 @@ import express from 'express'
 import cors    from 'cors'
 import bcrypt  from 'bcryptjs'
 import jwt     from 'jsonwebtoken'
-import db      from './db/turso.js'
+import db      from '../db/turso.js'
 
 const app = express()
 
