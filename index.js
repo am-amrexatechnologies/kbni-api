@@ -11,11 +11,10 @@ app.use(cookieParser());
 
 app.use(cors({
   origin: [
-    'http://localhost:5173',        // Vite Dev
-    'https://deine-app.vercel.app'  // Prod
+    'https://kbni-api.vercel.app'  // Prod
   ],
   credentials: true
-}))
+}));
 
 // ─── Turso DB Client ──────────────────────────────────────────────────────────
 const db = createClient({
