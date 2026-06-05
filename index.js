@@ -1,9 +1,8 @@
-require('dotenv').config();
-
-const express    = require('express');
-const { createClient } = require('@libsql/client');
-const cookieParser = require('cookie-parser');
-const bcrypt     = require('bcryptjs');
+import 'dotenv/config';
+import express       from 'express';
+import { createClient } from '@libsql/client';
+import cookieParser  from 'cookie-parser';
+import bcrypt        from 'bcryptjs';
 
 const app = express();
 app.use(express.json());
@@ -360,6 +359,5 @@ app.delete('/ratings/:userId/:characterId', asyncHandler(async (req, res) => {
   });
   res.json({ message: 'Rating gelöscht.' });
 }));
-
 
 export default app;
