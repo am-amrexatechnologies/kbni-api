@@ -1,416 +1,365 @@
-import express from 'express';
-import { connect } from '@tursodatabase/serverless';
+require('dotenv').config();
+
+const express    = require('express');
+const { createClient } = require('@libsql/client');
+const cookieParser = require('cookie-parser');
+const bcrypt     = require('bcryptjs');
 
 const app = express();
 app.use(express.json());
+app.use(cookieParser());
 
-const db = connect({
-  url: process.env.TURSO_DATABASE_URL,
+// ─── Turso DB Client ──────────────────────────────────────────────────────────
+const db = createClient({
+  url:       process.env.TURSO_DATABASE_URL,
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
+// ─── Helper ───────────────────────────────────────────────────────────────────
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch((err) => {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  });
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+// POST /auth/register
+app.post('/auth/register', asyncHandler(async (req, res) => {
+  const { username, email, password } = req.body;
+
+  if (!username || !email || !password)
+    return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
+
+  const pwhash = await bcrypt.hash(password, 10);
+
+  const result = await db.execute({
+    sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
+    args: [username, email, pwhash],
+  });
+
+  res.status(201).json({
+    message: 'Registrierung erfolgreich.',
+    id: Number(result.lastInsertRowid),
+    username,
+    email,
+  });
+}));
+
+// POST /auth/login
+app.post('/auth/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password)
+    return res.status(400).json({ error: 'username und password sind erforderlich.' });
+
+  const result = await db.execute({
+    sql:  'SELECT * FROM users WHERE username = ?',
+    args: [username],
+  });
+
+  const user = result.rows[0];
+  if (!user) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
+
+  const match = await bcrypt.compare(password, user.pwhash);
+  if (!match) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
+
+  res.cookie('session', JSON.stringify({ id: user.id, username: user.username }), {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge:   7 * 24 * 60 * 60 * 1000, // 7 Tage
+  });
+
+  res.json({
+    message: 'Login erfolgreich.',
+    user: { id: user.id, username: user.username, email: user.email },
+  });
+}));
+
+// POST /auth/logout
+app.post('/auth/logout', (req, res) => {
+  res.clearCookie('session');
+  res.json({ message: 'Logout erfolgreich.' });
+});
+
 // ─── USERS ────────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => {
-	res.json({
-		messag: "welcom"
-	});
-})
 
+// GET /users
+app.get('/users', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT id, username, email FROM users');
+  res.json(result.rows);
+}));
 
-app.get('/users', async (req, res) => {
-  try {
-    const result = await db.execute('SELECT id, username, email FROM users');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// GET /users/:id
+app.get('/users/:id', asyncHandler(async (req, res) => {
+  const result = await db.execute({
+    sql:  'SELECT id, username, email FROM users WHERE id = ?',
+    args: [req.params.id],
+  });
+  if (!result.rows[0]) return res.status(404).json({ error: 'User nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
+
+// POST /users
+app.post('/users', asyncHandler(async (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password)
+    return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
+
+  const pwhash = await bcrypt.hash(password, 10);
+  const result = await db.execute({
+    sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
+    args: [username, email, pwhash],
+  });
+  res.status(201).json({ id: Number(result.lastInsertRowid), username, email });
+}));
+
+// PUT /users/:id
+app.put('/users/:id', asyncHandler(async (req, res) => {
+  const { username, email, password } = req.body;
+  const fields = [];
+  const args   = [];
+
+  if (username)  { fields.push('username = ?'); args.push(username); }
+  if (email)     { fields.push('email = ?');    args.push(email); }
+  if (password)  {
+    const pwhash = await bcrypt.hash(password, 10);
+    fields.push('pwhash = ?');
+    args.push(pwhash);
   }
-});
+  if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
 
-// /users/login MUSS vor /users/:id stehen, sonst matched Express "login" als ID
-app.post('/users/login', async (req, res) => {
-  const { username, pwhash } = req.body;
-  if (!username || !pwhash)
-    return res.status(400).json({ error: 'username und pwhash erforderlich' });
-  try {
-    const result = await db.execute({
-      sql: 'SELECT id, username, email FROM users WHERE username = ? AND pwhash = ?',
-      args: [username, pwhash],
-    });
-    if (result.rows.length === 0)
-      return res.status(401).json({ error: 'Ungültige Anmeldedaten' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  args.push(req.params.id);
+  await db.execute({ sql: `UPDATE users SET ${fields.join(', ')} WHERE id = ?`, args });
+  res.json({ message: 'User aktualisiert.' });
+}));
 
-app.get('/users/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'SELECT id, username, email FROM users WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: 'User nicht gefunden' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/users', async (req, res) => {
-  const { username, email, pwhash } = req.body;
-  if (!username || !email || !pwhash)
-    return res.status(400).json({ error: 'username, email und pwhash erforderlich' });
-  try {
-    const result = await db.execute({
-      sql: 'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
-      args: [username, email, pwhash],
-    });
-    res.status(201).json({ id: Number(result.lastInsertRowid), username, email });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.put('/users/:id', async (req, res) => {
-  const { username, email, pwhash } = req.body;
-  try {
-    const result = await db.execute({
-      sql: `UPDATE users
-            SET username = COALESCE(?, username),
-                email    = COALESCE(?, email),
-                pwhash   = COALESCE(?, pwhash)
-            WHERE id = ?`,
-      args: [username ?? null, email ?? null, pwhash ?? null, req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'User nicht gefunden' });
-    res.json({ message: 'User aktualisiert' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.delete('/users/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'DELETE FROM users WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'User nicht gefunden' });
-    res.json({ message: 'User gelöscht' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// DELETE /users/:id
+app.delete('/users/:id', asyncHandler(async (req, res) => {
+  await db.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [req.params.id] });
+  res.json({ message: 'User gelöscht.' });
+}));
 
 // ─── ANIME ────────────────────────────────────────────────────────────────────
 
-app.get('/anime', async (req, res) => {
-  try {
-    const result = await db.execute('SELECT * FROM anime');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /anime
+app.get('/anime', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT * FROM anime');
+  res.json(result.rows);
+}));
 
-app.get('/anime/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'SELECT * FROM anime WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Anime nicht gefunden' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /anime/:id
+app.get('/anime/:id', asyncHandler(async (req, res) => {
+  const result = await db.execute({
+    sql:  'SELECT * FROM anime WHERE id = ?',
+    args: [req.params.id],
+  });
+  if (!result.rows[0]) return res.status(404).json({ error: 'Anime nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
 
-app.post('/anime', async (req, res) => {
+// POST /anime
+app.post('/anime', asyncHandler(async (req, res) => {
   const { id, animename } = req.body;
-  if (!animename)
-    return res.status(400).json({ error: 'animename erforderlich' });
-  try {
-    await db.execute({
-      sql: 'INSERT INTO anime (id, animename) VALUES (?, ?)',
-      args: [id ?? null, animename],
-    });
-    res.status(201).json({ message: 'Anime erstellt', animename });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (!animename) return res.status(400).json({ error: 'animename ist erforderlich.' });
 
-app.put('/anime/:id', async (req, res) => {
+  await db.execute({
+    sql:  'INSERT INTO anime (id, animename) VALUES (?, ?)',
+    args: [id ?? null, animename],
+  });
+  res.status(201).json({ message: 'Anime erstellt.', id: id ?? null, animename });
+}));
+
+// PUT /anime/:id
+app.put('/anime/:id', asyncHandler(async (req, res) => {
   const { animename } = req.body;
-  if (!animename)
-    return res.status(400).json({ error: 'animename erforderlich' });
-  try {
-    const result = await db.execute({
-      sql: 'UPDATE anime SET animename = ? WHERE id = ?',
-      args: [animename, req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Anime nicht gefunden' });
-    res.json({ message: 'Anime aktualisiert' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (!animename) return res.status(400).json({ error: 'animename ist erforderlich.' });
 
-app.delete('/anime/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'DELETE FROM anime WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Anime nicht gefunden' });
-    res.json({ message: 'Anime gelöscht' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  await db.execute({
+    sql:  'UPDATE anime SET animename = ? WHERE id = ?',
+    args: [animename, req.params.id],
+  });
+  res.json({ message: 'Anime aktualisiert.' });
+}));
 
-// ─── ANIME CHARACTERS ─────────────────────────────────────────────────────────
+// DELETE /anime/:id
+app.delete('/anime/:id', asyncHandler(async (req, res) => {
+  await db.execute({ sql: 'DELETE FROM anime WHERE id = ?', args: [req.params.id] });
+  res.json({ message: 'Anime gelöscht.' });
+}));
 
-app.get('/characters', async (req, res) => {
-  try {
-    const result = await db.execute(`
-      SELECT ac.*, a.animename
-      FROM anime_characters ac
-      LEFT JOIN anime a ON ac.animeid = a.id
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// ─── ANIME CHARACTERS ────────────────────────────────────────────────────────
 
-app.get('/characters/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: `SELECT ac.*, a.animename
-            FROM anime_characters ac
-            LEFT JOIN anime a ON ac.animeid = a.id
-            WHERE ac.id = ?`,
-      args: [req.params.id],
-    });
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Character nicht gefunden' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /characters
+app.get('/characters', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT * FROM anime_characters');
+  res.json(result.rows);
+}));
 
-app.get('/anime/:id/characters', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'SELECT * FROM anime_characters WHERE animeid = ?',
-      args: [req.params.id],
-    });
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /characters/:id
+app.get('/characters/:id', asyncHandler(async (req, res) => {
+  const result = await db.execute({
+    sql:  'SELECT * FROM anime_characters WHERE id = ?',
+    args: [req.params.id],
+  });
+  if (!result.rows[0]) return res.status(404).json({ error: 'Character nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
 
-app.post('/characters', async (req, res) => {
+// POST /characters
+app.post('/characters', asyncHandler(async (req, res) => {
   const { name, lastname, age, animeid } = req.body;
-  try {
-    const result = await db.execute({
-      sql: 'INSERT INTO anime_characters (name, lastname, age, animeid) VALUES (?, ?, ?, ?)',
-      args: [name ?? null, lastname ?? null, age ?? null, animeid ?? null],
-    });
-    res.status(201).json({
-      id: Number(result.lastInsertRowid),
-      name,
-      lastname,
-      age,
-      animeid,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.put('/characters/:id', async (req, res) => {
+  const result = await db.execute({
+    sql:  'INSERT INTO anime_characters (name, lastname, age, animeid) VALUES (?, ?, ?, ?)',
+    args: [name ?? null, lastname ?? null, age ?? null, animeid ?? null],
+  });
+  res.status(201).json({
+    id: Number(result.lastInsertRowid),
+    name, lastname, age, animeid,
+  });
+}));
+
+// PUT /characters/:id
+app.put('/characters/:id', asyncHandler(async (req, res) => {
   const { name, lastname, age, animeid } = req.body;
-  try {
-    const result = await db.execute({
-      sql: `UPDATE anime_characters
-            SET name     = COALESCE(?, name),
-                lastname = COALESCE(?, lastname),
-                age      = COALESCE(?, age),
-                animeid  = COALESCE(?, animeid)
-            WHERE id = ?`,
-      args: [name ?? null, lastname ?? null, age ?? null, animeid ?? null, req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Character nicht gefunden' });
-    res.json({ message: 'Character aktualisiert' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const fields = [];
+  const args   = [];
 
-app.delete('/characters/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'DELETE FROM anime_characters WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Character nicht gefunden' });
-    res.json({ message: 'Character gelöscht' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (name     !== undefined) { fields.push('name = ?');     args.push(name); }
+  if (lastname !== undefined) { fields.push('lastname = ?'); args.push(lastname); }
+  if (age      !== undefined) { fields.push('age = ?');      args.push(age); }
+  if (animeid  !== undefined) { fields.push('animeid = ?');  args.push(animeid); }
+
+  if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
+
+  args.push(req.params.id);
+  await db.execute({ sql: `UPDATE anime_characters SET ${fields.join(', ')} WHERE id = ?`, args });
+  res.json({ message: 'Character aktualisiert.' });
+}));
+
+// DELETE /characters/:id
+app.delete('/characters/:id', asyncHandler(async (req, res) => {
+  await db.execute({
+    sql:  'DELETE FROM anime_characters WHERE id = ?',
+    args: [req.params.id],
+  });
+  res.json({ message: 'Character gelöscht.' });
+}));
 
 // ─── CHAT ─────────────────────────────────────────────────────────────────────
 
-app.get('/chat', async (req, res) => {
-  try {
-    const result = await db.execute(
-      'SELECT * FROM chat ORDER BY timeposted ASC'
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /chat
+app.get('/chat', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT * FROM chat ORDER BY timeposted ASC');
+  res.json(result.rows);
+}));
 
-app.post('/chat', async (req, res) => {
-  const { username, text, type } = req.body;
-  if (!username)
-    return res.status(400).json({ error: 'username erforderlich' });
-  const timeposted = new Date().toISOString();
-  try {
-    const result = await db.execute({
-      sql: 'INSERT INTO chat (username, text, type, timeposted) VALUES (?, ?, ?, ?)',
-      args: [username, text ?? null, type ?? null, timeposted],
-    });
-    res.status(201).json({
-      id: Number(result.lastInsertRowid),
-      username,
-      text,
-      type,
-      timeposted,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// GET /chat/:id
+app.get('/chat/:id', asyncHandler(async (req, res) => {
+  const result = await db.execute({
+    sql:  'SELECT * FROM chat WHERE id = ?',
+    args: [req.params.id],
+  });
+  if (!result.rows[0]) return res.status(404).json({ error: 'Nachricht nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
 
-app.delete('/chat/:id', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'DELETE FROM chat WHERE id = ?',
-      args: [req.params.id],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Nachricht nicht gefunden' });
-    res.json({ message: 'Nachricht gelöscht' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// POST /chat
+app.post('/chat', asyncHandler(async (req, res) => {
+  const { username, text, type, timeposted } = req.body;
 
-// ─── CHARACTER RATINGS ────────────────────────────────────────────────────────
+  if (!username || !timeposted)
+    return res.status(400).json({ error: 'username und timeposted sind erforderlich.' });
 
-app.get('/ratings', async (req, res) => {
-  try {
-    const result = await db.execute('SELECT * FROM character_ratings');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  const result = await db.execute({
+    sql:  'INSERT INTO chat (username, text, type, timeposted) VALUES (?, ?, ?, ?)',
+    args: [username, text ?? null, type ?? null, timeposted],
+  });
+  res.status(201).json({
+    id: Number(result.lastInsertRowid),
+    username, text, type, timeposted,
+  });
+}));
 
-// Spezifische Subrouten vor /:userId/:characterId registrieren
-app.get('/ratings/user/:userId', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: `SELECT cr.*, ac.name, ac.lastname
-            FROM character_ratings cr
-            LEFT JOIN anime_characters ac ON cr.character_id = ac.id
-            WHERE cr.user_id = ?`,
-      args: [req.params.userId],
-    });
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// PUT /chat/:id
+app.put('/chat/:id', asyncHandler(async (req, res) => {
+  const { text, type } = req.body;
+  const fields = [];
+  const args   = [];
 
-app.get('/ratings/character/:characterId', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: `SELECT cr.*, u.username
-            FROM character_ratings cr
-            LEFT JOIN users u ON cr.user_id = u.id
-            WHERE cr.character_id = ?`,
-      args: [req.params.characterId],
-    });
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (text !== undefined) { fields.push('text = ?'); args.push(text); }
+  if (type !== undefined) { fields.push('type = ?'); args.push(type); }
 
-app.get('/ratings/:userId/:characterId', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'SELECT * FROM character_ratings WHERE user_id = ? AND character_id = ?',
-      args: [req.params.userId, req.params.characterId],
-    });
-    if (result.rows.length === 0)
-      return res.status(404).json({ error: 'Rating nicht gefunden' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
 
-// Upsert: erstellt oder überschreibt ein Rating
-app.post('/ratings', async (req, res) => {
+  args.push(req.params.id);
+  await db.execute({ sql: `UPDATE chat SET ${fields.join(', ')} WHERE id = ?`, args });
+  res.json({ message: 'Nachricht aktualisiert.' });
+}));
+
+// DELETE /chat/:id
+app.delete('/chat/:id', asyncHandler(async (req, res) => {
+  await db.execute({ sql: 'DELETE FROM chat WHERE id = ?', args: [req.params.id] });
+  res.json({ message: 'Nachricht gelöscht.' });
+}));
+
+// ─── CHARACTER RATINGS ───────────────────────────────────────────────────────
+
+// GET /ratings
+app.get('/ratings', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT * FROM character_ratings');
+  res.json(result.rows);
+}));
+
+// GET /ratings/:userId/:characterId
+app.get('/ratings/:userId/:characterId', asyncHandler(async (req, res) => {
+  const result = await db.execute({
+    sql:  'SELECT * FROM character_ratings WHERE user_id = ? AND character_id = ?',
+    args: [req.params.userId, req.params.characterId],
+  });
+  if (!result.rows[0]) return res.status(404).json({ error: 'Rating nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
+
+// POST /ratings  — upsert: legt an oder überschreibt bestehende Bewertung
+app.post('/ratings', asyncHandler(async (req, res) => {
   const { user_id, character_id, rating } = req.body;
-  if (user_id === undefined || character_id === undefined || rating === undefined)
-    return res.status(400).json({ error: 'user_id, character_id und rating erforderlich' });
-  const updated_at = new Date().toISOString();
-  try {
-    await db.execute({
-      sql: `INSERT INTO character_ratings (user_id, character_id, rating, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, character_id)
-            DO UPDATE SET rating = excluded.rating, updated_at = excluded.updated_at`,
-      args: [user_id, character_id, rating, updated_at],
-    });
-    res.status(201).json({ user_id, character_id, rating, updated_at });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-app.delete('/ratings/:userId/:characterId', async (req, res) => {
-  try {
-    const result = await db.execute({
-      sql: 'DELETE FROM character_ratings WHERE user_id = ? AND character_id = ?',
-      args: [req.params.userId, req.params.characterId],
-    });
-    if (result.rowsAffected === 0)
-      return res.status(404).json({ error: 'Rating nicht gefunden' });
-    res.json({ message: 'Rating gelöscht' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  if (!user_id || !character_id || rating === undefined)
+    return res.status(400).json({ error: 'user_id, character_id und rating sind erforderlich.' });
+
+  await db.execute({
+    sql: `INSERT INTO character_ratings (user_id, character_id, rating)
+          VALUES (?, ?, ?)
+          ON CONFLICT(user_id, character_id)
+          DO UPDATE SET rating = excluded.rating, updated_at = datetime('now')`,
+    args: [user_id, character_id, rating],
+  });
+  res.status(201).json({ message: 'Rating gespeichert.' });
+}));
+
+// PUT /ratings/:userId/:characterId
+app.put('/ratings/:userId/:characterId', asyncHandler(async (req, res) => {
+  const { rating } = req.body;
+  if (rating === undefined) return res.status(400).json({ error: 'rating ist erforderlich.' });
+
+  await db.execute({
+    sql:  `UPDATE character_ratings SET rating = ?, updated_at = datetime('now')
+           WHERE user_id = ? AND character_id = ?`,
+    args: [rating, req.params.userId, req.params.characterId],
+  });
+  res.json({ message: 'Rating aktualisiert.' });
+}));
+
+// DELETE /ratings/:userId/:characterId
+app.delete('/ratings/:userId/:characterId', asyncHandler(async (req, res) => {
+  await db.execute({
+    sql:  'DELETE FROM character_ratings WHERE user_id = ? AND character_id = ?',
+    args: [req.params.userId, req.params.characterId],
+  });
+  res.json({ message: 'Rating gelöscht.' });
+}));
+
 
 export default app;
