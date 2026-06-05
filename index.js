@@ -1,8 +1,7 @@
 import 'dotenv/config';
-import express       from 'express';
-import { createClient } from '@libsql/client';
-import cookieParser  from 'cookie-parser';
-import bcrypt        from 'bcryptjs';
+import express           from 'express';
+import { createClient }  from '@libsql/client';
+import cookieParser      from 'cookie-parser';
 
 const app = express();
 app.use(express.json());
@@ -30,11 +29,9 @@ app.post('/auth/register', asyncHandler(async (req, res) => {
   if (!username || !email || !password)
     return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
 
-  const pwhash = await bcrypt.hash(password, 10);
-
   const result = await db.execute({
     sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
-    args: [username, email, pwhash],
+    args: [username, email, password],
   });
 
   res.status(201).json({
@@ -53,15 +50,12 @@ app.post('/auth/login', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'username und password sind erforderlich.' });
 
   const result = await db.execute({
-    sql:  'SELECT * FROM users WHERE username = ?',
-    args: [username],
+    sql:  'SELECT * FROM users WHERE username = ? AND pwhash = ?',
+    args: [username, password],
   });
 
   const user = result.rows[0];
   if (!user) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
-
-  const match = await bcrypt.compare(password, user.pwhash);
-  if (!match) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
 
   res.cookie('session', JSON.stringify({ id: user.id, username: user.username }), {
     httpOnly: true,
@@ -105,10 +99,9 @@ app.post('/users', asyncHandler(async (req, res) => {
   if (!username || !email || !password)
     return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
 
-  const pwhash = await bcrypt.hash(password, 10);
   const result = await db.execute({
     sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
-    args: [username, email, pwhash],
+    args: [username, email, password],
   });
   res.status(201).json({ id: Number(result.lastInsertRowid), username, email });
 }));
@@ -119,13 +112,10 @@ app.put('/users/:id', asyncHandler(async (req, res) => {
   const fields = [];
   const args   = [];
 
-  if (username)  { fields.push('username = ?'); args.push(username); }
-  if (email)     { fields.push('email = ?');    args.push(email); }
-  if (password)  {
-    const pwhash = await bcrypt.hash(password, 10);
-    fields.push('pwhash = ?');
-    args.push(pwhash);
-  }
+  if (username) { fields.push('username = ?'); args.push(username); }
+  if (email)    { fields.push('email = ?');    args.push(email); }
+  if (password) { fields.push('pwhash = ?');   args.push(password); }
+
   if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
 
   args.push(req.params.id);
