@@ -3,18 +3,10 @@ import express       from 'express';
 import { createClient } from '@libsql/client';
 import cookieParser  from 'cookie-parser';
 import bcrypt        from 'bcryptjs';
-import cors from "cors";
 
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
-
-app.use(cors({
-  origin: [
-    '*'  // Prod
-  ],
-  credentials: false
-}));
 
 // ─── Turso DB Client ──────────────────────────────────────────────────────────
 const db = createClient({
