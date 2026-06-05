@@ -11,9 +11,9 @@ app.use(cookieParser());
 
 app.use(cors({
   origin: [
-    'https://kbni-api.vercel.app'  // Prod
+    '*'  // Prod
   ],
-  credentials: true
+  credentials: false
 }));
 
 // ─── Turso DB Client ──────────────────────────────────────────────────────────
