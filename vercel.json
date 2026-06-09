@@ -14,7 +14,7 @@
                     "key": "Access-Control-Allow-Origin",
                     "value": "https://kbni-management.vercel.app"
                 },
-                { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+                { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS, DELETE, PUT" },
                 { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" },
                 { "key": "Access-Control-Allow-Credentials", "value": "true" }
             ]
@@ -33,7 +33,7 @@
                     "key": "Access-Control-Allow-Origin",
                     "value": "https://kbni.vercel.app"
                 },
-                { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+                { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS, DELETE, PUT" },
                 { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" },
                 { "key": "Access-Control-Allow-Credentials", "value": "true" }
             ]
