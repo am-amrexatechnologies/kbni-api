@@ -1,9 +1,31 @@
 import 'dotenv/config';
-import express           from 'express';
-import { createClient }  from '@libsql/client';
-import cookieParser      from 'cookie-parser';
+import express          from 'express';
+import { createClient } from '@libsql/client';
+import cookieParser     from 'cookie-parser';
+import bcrypt           from 'bcryptjs';
+import nodemailer       from 'nodemailer';
+import cors             from 'cors';
+import dns              from 'dns/promises';
 
 const app = express();
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  : ['https://kbni.vercel.app'];
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Erlaubt auch requests ohne Origin (z.B. Server-zu-Server, curl)
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: Origin ${origin} nicht erlaubt.`));
+  },
+  credentials:    true,
+  methods:        ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.options('*', cors()); // Preflight für alle Routen
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -13,6 +35,17 @@ const db = createClient({
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
+// ─── Nodemailer Transporter ───────────────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  host:   process.env.SMTP_HOST,
+  port:   Number(process.env.SMTP_PORT) || 587,
+  secure: process.env.SMTP_SECURE === 'true', // true für Port 465
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
 // ─── Helper ───────────────────────────────────────────────────────────────────
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch((err) => {
@@ -20,29 +53,96 @@ const asyncHandler = (fn) => (req, res, next) =>
     res.status(500).json({ error: err.message });
   });
 
+/** Prüft E-Mail-Format via Regex */
+function isEmailFormatValid(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+}
+
+/**
+ * Prüft ob die Domain der E-Mail-Adresse einen MX-Record besitzt.
+ * Das ist kein Garant, aber filtert Fake-Domains (z.B. test@nonexistent.xyz) zuverlässig.
+ */
+async function isEmailDomainValid(email) {
+  const domain = email.split('@')[1];
+  if (!domain) return false;
+  try {
+    const records = await dns.resolveMx(domain);
+    return Array.isArray(records) && records.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Sendet eine Willkommens-E-Mail nach erfolgreicher Registrierung */
+async function sendWelcomeEmail(email, username) {
+  await transporter.sendMail({
+    from:    `"${process.env.SMTP_FROM_NAME || 'App'}" <${process.env.SMTP_FROM_EMAIL}>`,
+    to:      email,
+    subject: 'Willkommen bei uns! 🎉',
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: auto;">
+        <h2>Hey ${username}, willkommen! 👋</h2>
+        <p>Dein Account wurde erfolgreich erstellt. Schön, dass du dabei bist!</p>
+        <p>Viel Spaß auf der Plattform.</p>
+        <hr style="border: none; border-top: 1px solid #eee;" />
+        <p style="font-size: 12px; color: #999;">
+          Diese E-Mail wurde automatisch verschickt. Bitte antworte nicht darauf.
+        </p>
+      </div>
+    `,
+  });
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
-// POST /auth/register
+/**
+ * POST /auth/register
+ * Registriert einen neuen User mit gehashtem Passwort.
+ * Validiert E-Mail-Format und Domain (MX-Record).
+ * Sendet anschließend eine Willkommens-E-Mail.
+ */
 app.post('/auth/register', asyncHandler(async (req, res) => {
   const { username, email, password } = req.body;
 
   if (!username || !email || !password)
     return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
 
+  // E-Mail-Format prüfen
+  if (!isEmailFormatValid(email))
+    return res.status(400).json({ error: 'Ungültiges E-Mail-Format.' });
+
+  // E-Mail-Domain prüfen (MX-Record)
+  const domainValid = await isEmailDomainValid(email);
+  if (!domainValid)
+    return res.status(400).json({ error: 'Die E-Mail-Domain existiert nicht oder akzeptiert keine Mails.' });
+
+  // Passwort hashen
+  const pwhash = await bcrypt.hash(password, 12);
+
   const result = await db.execute({
     sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
-    args: [username, email, password],
+    args: [username, email, pwhash],
   });
+
+  // Willkommens-E-Mail – Fehler hier sollen die Registrierung nicht blockieren
+  try {
+    await sendWelcomeEmail(email, username);
+  } catch (mailErr) {
+    console.error('Willkommens-E-Mail konnte nicht gesendet werden:', mailErr.message);
+  }
 
   res.status(201).json({
     message: 'Registrierung erfolgreich.',
-    id: Number(result.lastInsertRowid),
+    id:      Number(result.lastInsertRowid),
     username,
     email,
   });
 }));
 
-// POST /auth/login
+/**
+ * POST /auth/login
+ * Login für normale User — alle Rollen erlaubt (für die User-App).
+ */
 app.post('/auth/login', asyncHandler(async (req, res) => {
   const { username, password } = req.body;
 
@@ -50,14 +150,17 @@ app.post('/auth/login', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'username und password sind erforderlich.' });
 
   const result = await db.execute({
-    sql:  'SELECT * FROM users WHERE username = ? AND pwhash = ?',
-    args: [username, password],
+    sql:  'SELECT u.*, r.role as role_name FROM users u JOIN roles r ON r.id = u.role WHERE u.username = ?',
+    args: [username],
   });
 
   const user = result.rows[0];
   if (!user) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
 
-  res.cookie('session', JSON.stringify({ id: user.id, username: user.username }), {
+  const passwordMatch = await bcrypt.compare(password, user.pwhash);
+  if (!passwordMatch) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
+
+  res.cookie('session', JSON.stringify({ id: user.id, username: user.username, role: user.role_name }), {
     httpOnly: true,
     sameSite: 'lax',
     maxAge:   7 * 24 * 60 * 60 * 1000, // 7 Tage
@@ -65,7 +168,45 @@ app.post('/auth/login', asyncHandler(async (req, res) => {
 
   res.json({
     message: 'Login erfolgreich.',
-    user: { id: user.id, username: user.username, email: user.email },
+    user: { id: user.id, username: user.username, email: user.email, role: user.role_name },
+  });
+}));
+
+/**
+ * POST /auth/admin/login
+ * Login ausschließlich für Admins — für die Management App.
+ * Normale User erhalten 403.
+ */
+app.post('/auth/admin/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password)
+    return res.status(400).json({ error: 'username und password sind erforderlich.' });
+
+  const result = await db.execute({
+    sql:  'SELECT u.*, r.role as role_name FROM users u JOIN roles r ON r.id = u.role WHERE u.username = ?',
+    args: [username],
+  });
+
+  const user = result.rows[0];
+  if (!user) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
+
+  const passwordMatch = await bcrypt.compare(password, user.pwhash);
+  if (!passwordMatch) return res.status(401).json({ error: 'Ungültige Anmeldedaten.' });
+
+  // Nur Admins dürfen sich hier anmelden
+  if (user.role_name !== 'admin')
+    return res.status(403).json({ error: 'Keine Berechtigung für die Management App.' });
+
+  res.cookie('session', JSON.stringify({ id: user.id, username: user.username, role: user.role_name }), {
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+  });
+
+  res.json({
+    message: 'Login erfolgreich.',
+    user: { id: user.id, username: user.username, email: user.email, role: user.role_name },
   });
 }));
 
@@ -75,18 +216,49 @@ app.post('/auth/logout', (req, res) => {
   res.json({ message: 'Logout erfolgreich.' });
 });
 
+// GET /auth/me — gibt den aktuell eingeloggten User zurück
+app.get('/auth/me', asyncHandler(async (req, res) => {
+  const raw = req.cookies?.session;
+  if (!raw) return res.status(401).json({ error: 'Nicht eingeloggt.' });
+
+  let session;
+  try {
+    session = JSON.parse(raw);
+  } catch {
+    return res.status(401).json({ error: 'Ungültige Session.' });
+  }
+
+  const result = await db.execute({
+    sql:  'SELECT u.id, u.username, u.email, r.role as role_name FROM users u JOIN roles r ON r.id = u.role WHERE u.id = ?',
+    args: [session.id],
+  });
+
+  if (!result.rows[0]) return res.status(401).json({ error: 'User nicht gefunden.' });
+  res.json(result.rows[0]);
+}));
+
+// ─── ROLES ────────────────────────────────────────────────────────────────────
+
+// GET /roles
+app.get('/roles', asyncHandler(async (_req, res) => {
+  const result = await db.execute('SELECT * FROM roles');
+  res.json(result.rows);
+}));
+
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
 // GET /users
 app.get('/users', asyncHandler(async (_req, res) => {
-  const result = await db.execute('SELECT id, username, email FROM users');
+  const result = await db.execute(
+    'SELECT u.id, u.username, u.email, u.role, r.role as role_name FROM users u JOIN roles r ON r.id = u.role'
+  );
   res.json(result.rows);
 }));
 
 // GET /users/:id
 app.get('/users/:id', asyncHandler(async (req, res) => {
   const result = await db.execute({
-    sql:  'SELECT id, username, email FROM users WHERE id = ?',
+    sql:  'SELECT u.id, u.username, u.email, u.role, r.role as role_name FROM users u JOIN roles r ON r.id = u.role WHERE u.id = ?',
     args: [req.params.id],
   });
   if (!result.rows[0]) return res.status(404).json({ error: 'User nicht gefunden.' });
@@ -95,26 +267,37 @@ app.get('/users/:id', asyncHandler(async (req, res) => {
 
 // POST /users
 app.post('/users', asyncHandler(async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, role } = req.body;
+
   if (!username || !email || !password)
     return res.status(400).json({ error: 'username, email und password sind erforderlich.' });
 
+  if (!isEmailFormatValid(email))
+    return res.status(400).json({ error: 'Ungültiges E-Mail-Format.' });
+
+  const pwhash = await bcrypt.hash(password, 12);
+
   const result = await db.execute({
-    sql:  'INSERT INTO users (username, email, pwhash) VALUES (?, ?, ?)',
-    args: [username, email, password],
+    sql:  'INSERT INTO users (username, email, pwhash, role) VALUES (?, ?, ?, ?)',
+    args: [username, email, pwhash, role ?? 1],
   });
-  res.status(201).json({ id: Number(result.lastInsertRowid), username, email });
+  res.status(201).json({ id: Number(result.lastInsertRowid), username, email, role: role ?? 1 });
 }));
 
 // PUT /users/:id
 app.put('/users/:id', asyncHandler(async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, role } = req.body;
   const fields = [];
   const args   = [];
 
   if (username) { fields.push('username = ?'); args.push(username); }
   if (email)    { fields.push('email = ?');    args.push(email); }
-  if (password) { fields.push('pwhash = ?');   args.push(password); }
+  if (password) {
+    const pwhash = await bcrypt.hash(password, 12);
+    fields.push('pwhash = ?');
+    args.push(pwhash);
+  }
+  if (role !== undefined) { fields.push('role = ?'); args.push(role); }
 
   if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
 
@@ -177,7 +360,8 @@ app.delete('/anime/:id', asyncHandler(async (req, res) => {
   res.json({ message: 'Anime gelöscht.' });
 }));
 
-// ─── ANIME CHARACTERS ────────────────────────────────────────────────────────
+// ─── ANIME CHARACTERS ─────────────────────────────────────────────────────────
+// Hinweis: Das Feld `age` existiert nicht mehr im DB-Schema und wurde entfernt.
 
 // GET /characters
 app.get('/characters', asyncHandler(async (_req, res) => {
@@ -197,27 +381,26 @@ app.get('/characters/:id', asyncHandler(async (req, res) => {
 
 // POST /characters
 app.post('/characters', asyncHandler(async (req, res) => {
-  const { name, lastname, age, animeid } = req.body;
+  const { name, lastname, animeid } = req.body;
 
   const result = await db.execute({
-    sql:  'INSERT INTO anime_characters (name, lastname, age, animeid) VALUES (?, ?, ?, ?)',
-    args: [name ?? null, lastname ?? null, age ?? null, animeid ?? null],
+    sql:  'INSERT INTO anime_characters (name, lastname, animeid) VALUES (?, ?, ?)',
+    args: [name ?? null, lastname ?? null, animeid ?? null],
   });
   res.status(201).json({
     id: Number(result.lastInsertRowid),
-    name, lastname, age, animeid,
+    name, lastname, animeid,
   });
 }));
 
 // PUT /characters/:id
 app.put('/characters/:id', asyncHandler(async (req, res) => {
-  const { name, lastname, age, animeid } = req.body;
+  const { name, lastname, animeid } = req.body;
   const fields = [];
   const args   = [];
 
   if (name     !== undefined) { fields.push('name = ?');     args.push(name); }
   if (lastname !== undefined) { fields.push('lastname = ?'); args.push(lastname); }
-  if (age      !== undefined) { fields.push('age = ?');      args.push(age); }
   if (animeid  !== undefined) { fields.push('animeid = ?');  args.push(animeid); }
 
   if (!fields.length) return res.status(400).json({ error: 'Keine Felder zum Aktualisieren.' });
@@ -311,7 +494,7 @@ app.get('/ratings/:userId/:characterId', asyncHandler(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
-// POST /ratings  — upsert: legt an oder überschreibt bestehende Bewertung
+// POST /ratings — upsert: legt an oder überschreibt bestehende Bewertung
 app.post('/ratings', asyncHandler(async (req, res) => {
   const { user_id, character_id, rating } = req.body;
 
