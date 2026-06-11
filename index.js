@@ -4,28 +4,9 @@ import { createClient } from '@libsql/client';
 import cookieParser     from 'cookie-parser';
 import bcrypt           from 'bcryptjs';
 import nodemailer       from 'nodemailer';
-import cors             from 'cors';
 import dns              from 'dns/promises';
 
 const app = express();
-
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-  : ['https://kbni.vercel.app'];
-
-app.use(cors({
-  origin: (origin, cb) => {
-    // Erlaubt auch requests ohne Origin (z.B. Server-zu-Server, curl)
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: Origin ${origin} nicht erlaubt.`));
-  },
-  credentials:    true,
-  methods:        ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-app.options('*', cors()); // Preflight für alle Routen
-
 app.use(express.json());
 app.use(cookieParser());
 
